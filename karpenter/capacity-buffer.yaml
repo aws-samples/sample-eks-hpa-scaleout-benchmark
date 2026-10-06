@@ -1,0 +1,65 @@
+# Karpenter CapacityBuffer — WITH capacity buffer arm.
+# CONFIRMED syntax (Karpenter docs, v1.14, 2026-09). NOTE: this is a SEPARATE CRD,
+# not a stanza inside NodePool.
+#
+# PREREQUISITES (verify before applying):
+#   - Karpenter v1.14+ installed
+#   - CapacityBuffer alpha feature gate ENABLED (see karpenter.sh settings / feature-gates)
+#   - The `benchmark` NodePool (karpenter/nodepool.yaml) is applied for actual provisioning
+#
+# This keeps ~20% of the app's replica count as warm headroom so scaled-out pods land
+# on existing nodes instead of waiting for cold node launches.
+apiVersion: autoscaling.x-k8s.io/v1alpha1
+kind: CapacityBuffer
+metadata:
+  name: benchmark-buffer
+  namespace: benchmark
+spec:
+  provisioningStrategy: "buffer.x-k8s.io/active-capacity"
+  scalableRef:
+    apiGroup: apps
+    kind: Deployment
+    name: scaleout-app
+  percentage: 20
+  # Alternatively, a fixed buffer independent of app size:
+  # (remove scalableRef/percentage and use podTemplateRef + replicas instead)
+  # podTemplateRef:
+  #   name: benchmark-buffer-template
+  # replicas: 30
+---
+# Only needed if you use podTemplateRef instead of scalableRef above.
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: benchmark-buffer-template
+  namespace: benchmark
+  annotations:
+    checkov.io/skip1: CKV_K8S_8=Pause placeholders serve nothing; probes add kubelet overhead per warm slot
+    checkov.io/skip2: CKV_K8S_9=Placeholders exist only to reserve capacity
+    checkov.io/skip3: CKV_K8S_43=Digest pinning omitted in this sample for readability; pin in production
+template:
+  spec:
+    automountServiceAccountToken: false
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      seccompProfile: { type: RuntimeDefault }
+    containers:
+      - name: placeholder
+        image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
+        imagePullPolicy: Always
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: "200m"       # match the app's per-pod request so a chunk == an app pod
+            memory: "128Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+    nodeSelector:
+      karpenter.sh/capacity-type: on-demand

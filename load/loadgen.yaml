@@ -1,0 +1,68 @@
+# In-cluster load generator — FORTIO-based, scalable, isolated. Drives high sustained RPS
+# against the CPU-burn app so the CPU-HPA scales toward high replica counts.
+#
+# Why this replaces the busybox wget Job:
+#   - busybox wget loops plateaued at ~27 pods (couldn't offer enough CPU-driving load).
+#   - Fortio is a purpose-built HTTP load tool; each replica sustains high QPS at fixed
+#     concurrency. We RAMP total load by scaling this Deployment's replicas (see
+#     scripts/run-benchmark.sh), which keeps app CPU above target as pods scale out.
+#   - Isolated onto the system nodegroup (nodeSelector role=system) so loaders never
+#     compete for the CPU we measure on benchmark nodes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: benchmark
+  labels: { role: loadgen }
+  annotations:
+    checkov.io/skip1: CKV_K8S_8=No liveness probe; a restarted loader mid-run would perturb the measured load
+    checkov.io/skip2: CKV_K8S_9=Loaders serve no traffic; run-benchmark.sh tracks them via replica counts
+    checkov.io/skip3: CKV_K8S_43=Digest pinning omitted in this sample for readability; pin in production
+    checkov.io/skip4: CKV2_K8S_6=NetworkPolicy omitted; dedicated short-lived benchmark cluster
+spec:
+  replicas: 1                       # ramp by scaling this (run-benchmark.sh drives it)
+  selector:
+    matchLabels: { role: loadgen }
+  template:
+    metadata:
+      labels: { role: loadgen }
+    spec:
+      automountServiceAccountToken: false   # loader calls no Kubernetes APIs
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: { type: RuntimeDefault }
+      nodeSelector:
+        role: system                # isolate loaders from measured app nodes
+      containers:
+        - name: fortio
+          image: fortio/fortio:1.75.3   # pinned release (was :latest)
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # -c 8 concurrent connections per replica (was 50 — too aggressive; pegged the
+          # initial pods to 100%+ CPU before Karpenter could add nodes, causing readiness
+          # flapping). Lower per-replica load + more replicas = smoother ramp that lets
+          # nodes keep up. Scale replicas (run-benchmark.sh) to grow total load gradually.
+          args:
+            - load
+            - -c
+            - "8"
+            - -qps
+            - "0"
+            - -t
+            - "0"
+            - -uniform
+            # Plain HTTP is intentional: this is in-cluster ClusterIP traffic to the
+            # benchmark app, which serves HTTP only (registry.k8s.io/hpa-example has
+            # no TLS). Traffic never leaves the cluster network.
+            - http://scaleout-app.benchmark.svc.cluster.local/
+          resources:
+            requests: { cpu: "200m", memory: "64Mi" }
+            # Generous limits: offered load is controlled by scaling replicas
+            # (run-benchmark.sh), not by throttling individual loaders.
+            limits:   { cpu: "1",    memory: "256Mi" }

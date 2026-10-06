@@ -1,0 +1,28 @@
+# --- Results curation -------------------------------------------------------
+# Only the quality-gated runs cited in the blog are published
+# (analyze.sh QUALITY = OK). Failed/superseded runs stay local.
+# Kubernetes 1.31 revision:
+results/*
+!results/standard-nobuffer-20260904T190209Z/
+!results/xl-nobuffer-20260904T202050Z/
+!results/2xl-nobuffer-20260904T210217Z/
+!results/standard-buffer-20260905T022913Z/
+# Kubernetes 1.36 revision:
+!results/1.36/
+results/1.36/*
+!results/1.36/standard-nobuffer-20260910T020104Z/
+!results/1.36/xl-nobuffer-20260910T045928Z/
+!results/1.36/2xl-nobuffer-20260910T060336Z/
+!results/1.36/standard-buffer-20260910T091436Z/
+!results/1.36/standard-buffer-20260910T093137Z/
+
+# Publish the measurement data (CSVs + spike timestamp), not the raw event
+# dumps: events.txt is full of high-entropy container/sandbox IDs that trip
+# secrets scanners, and adds no information beyond the CSVs.
+results/**/events.txt
+
+# --- Local artifacts ---------------------------------------------------------
+.ash/ash_output/
+*.png
+build.log
+.DS_Store

@@ -1,0 +1,25 @@
+# eksctl config — STANDARD control plane (baseline arm of the benchmark)
+# Override REGION / instance types as needed. Defaults: us-west-2, m6i data plane.
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: hpa-bench-standard
+  region: us-west-2
+  version: "1.36"
+
+# Standard control plane = omit any provisioned control-plane tier config.
+managedNodeGroups:
+  - name: system
+    instanceType: m6i.large
+    desiredCapacity: 2
+    minSize: 2
+    maxSize: 3
+    labels: { role: system }
+
+# Karpenter provisions the data-plane nodes for the scale-out (see karpenter/).
+iam:
+  withOIDC: true          # REQUIRED for Karpenter/IRSA — the dry-run had this off, which blocks Karpenter.
+
+# After create: run karpenter/install-karpenter.sh <cluster>, then apply karpenter/nodepool.yaml.
+# Tag subnets/SGs with karpenter.sh/discovery=<cluster> so the EC2NodeClass can find them.

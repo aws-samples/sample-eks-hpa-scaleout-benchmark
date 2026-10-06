@@ -1,0 +1,33 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: scaleout-app
+  namespace: benchmark
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: scaleout-app
+  minReplicas: 10
+  maxReplicas: 300
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50
+  behavior:
+    scaleUp:
+      # Minimize HPA-side damping so the benchmark isolates control-plane +
+      # node-provisioning latency rather than HPA's own throttle. Document this;
+      # a second run with default stabilization shows the stabilization-window effect.
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 50
+          periodSeconds: 15
+      selectPolicy: Max

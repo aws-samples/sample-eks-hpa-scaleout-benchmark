@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scaleout-app
+  namespace: benchmark
+  labels: { app: scaleout-app }
+  annotations:
+    checkov.io/skip1: CKV_K8S_8=No liveness probe by design; kubelet restarts of CPU-pinned pods would corrupt the TTR measurement
+    checkov.io/skip2: CKV_K8S_23=Image starts Apache as root to bind :80; no non-root mode
+    checkov.io/skip3: CKV_K8S_25=NET_BIND_SERVICE/SETUID/SETGID/DAC_OVERRIDE/CHOWN/FOWNER required by root-started Apache worker model (setuid to www-data, pid/lock file ownership)
+    checkov.io/skip4: CKV_K8S_40=See CKV_K8S_23; image requires root
+    checkov.io/skip5: CKV2_K8S_6=NetworkPolicy omitted; dedicated short-lived benchmark cluster and a policy agent would add a measurement variable
+spec:
+  replicas: 10                    # baseline; HPA scales 10 -> 300
+  selector:
+    matchLabels: { app: scaleout-app }
+  template:
+    metadata:
+      labels: { app: scaleout-app }
+    spec:
+      automountServiceAccountToken: false   # pod calls no Kubernetes APIs
+      securityContext:
+        seccompProfile: { type: RuntimeDefault }
+      # Run ONLY on Karpenter benchmark nodes (isolated from loaders on the system NG).
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: benchmark
+          effect: NoSchedule
+      nodeSelector:
+        role: benchmark
+      # Density: allow multiple app pods per node (was forcing ~1/node, which wasted nodes
+      # and thrashed consolidation). maxSkew high + ScheduleAnyway lets pods pack; scale-out
+      # to high replica counts still forces new nodes, exercising Karpenter without 1:1 waste.
+      topologySpreadConstraints:
+        - maxSkew: 10
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: scaleout-app }
+      containers:
+        - name: app
+          # CPU-burnable app (each GET burns CPU) so HTTP load drives the CPU-based HPA.
+          # Pinned by digest (registry.k8s.io/hpa-example only publishes :latest by tag;
+          # digest pinning still makes the reference immutable and reproducible).
+          image: registry.k8s.io/hpa-example@sha256:581697a37f0e136db86d6b30392f0db40ce99c8248a7044c770012f4e8491544
+          securityContext:
+            allowPrivilegeEscalation: false   # blocks gaining privs; Apache dropping to www-data via setuid still works
+            readOnlyRootFilesystem: true      # verified live on EKS: Apache only needs the emptyDir mounts below (pid/lock)
+            capabilities:
+              drop: ["ALL"]
+              # Apache starts as root, binds :80, setuids workers to www-data, and
+              # writes pid/lock files into image dirs (needs DAC_OVERRIDE + CHOWN
+              # with a dropped-ALL baseline; verified live on EKS 1.36).
+              add: ["NET_BIND_SERVICE", "SETUID", "SETGID", "DAC_OVERRIDE", "CHOWN", "FOWNER"]
+          volumeMounts:
+            - name: apache-run
+              mountPath: /var/run/apache2
+            - name: apache-lock
+              mountPath: /var/lock/apache2
+          ports: [{ containerPort: 80 }]
+          resources:
+            # HPA scales on % of REQUEST. Request 200m (target 50% => scale at ~100m used).
+            # Limit 1000m gives busy pods headroom to still answer readiness probes even
+            # when load is heavy — this fixes the starvation/flapping seen when request==limit
+            # and pods pinned at 100% couldn't pass health checks.
+            requests: { cpu: "200m", memory: "128Mi" }
+            limits:   { cpu: "1000m", memory: "256Mi" }
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            initialDelaySeconds: 2
+            periodSeconds: 5          # less aggressive so transient CPU spikes don't flap Ready
+            timeoutSeconds: 3
+            failureThreshold: 5       # tolerate brief blips before marking NotReady
+            successThreshold: 1
+      volumes:
+        - name: apache-run
+          emptyDir: {}
+        - name: apache-lock
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scaleout-app
+  namespace: benchmark
+spec:
+  selector: { app: scaleout-app }
+  ports: [{ port: 80, targetPort: 80 }]
+  type: ClusterIP

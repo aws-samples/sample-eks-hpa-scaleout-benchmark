@@ -1,0 +1,16 @@
+# ASH (Automated Security Helper) configuration for this repository.
+# https://github.com/awslabs/automated-security-helper
+global_settings:
+  ignore_paths:
+    - path: 'results/'
+      reason: >-
+        Captured benchmark output (pod events, per-pod TTR CSVs). The 64-char
+        container/sandbox IDs in events.txt are high-entropy strings that
+        trigger detect-secrets false positives. These files contain no code,
+        credentials, or account identifiers; the source clusters are deleted.
+  suppressions:
+    - rule_id: 'SECRET-HEX-HIGH-ENTROPY-STRING'
+      path: 'results/**'
+      reason: >-
+        False positives: 64-char hex container/sandbox IDs in captured
+        kubectl events output. Not secrets; source clusters are deleted.

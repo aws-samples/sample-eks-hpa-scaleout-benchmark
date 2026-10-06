@@ -1,0 +1,29 @@
+# EC2NodeClass for the benchmark NodePool. Placeholders are substituted by
+# create-standard-with-karpenter.sh (CLUSTER_PLACEHOLDER, ALIAS_PLACEHOLDER).
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+spec:
+  # Disable kubelet Graceful Node Shutdown on benchmark nodes. On EKS 1.36
+  # AL2023 nodes we observed false "imminent node shutdown" events that
+  # SIGTERM every pod (phase Succeeded, never restarted) on nodes that keep
+  # running, silently corrupting TTR data. Benchmark nodes are only ever
+  # terminated after data capture, so shutdown grace adds nothing here.
+  userData: |
+    apiVersion: node.eks.aws/v1alpha1
+    kind: NodeConfig
+    spec:
+      kubelet:
+        config:
+          shutdownGracePeriod: 0s
+          shutdownGracePeriodCriticalPods: 0s
+  role: "KarpenterNodeRole-CLUSTER_PLACEHOLDER"
+  amiSelectorTerms:
+    - alias: "al2023@ALIAS_PLACEHOLDER"
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "CLUSTER_PLACEHOLDER"
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "CLUSTER_PLACEHOLDER"

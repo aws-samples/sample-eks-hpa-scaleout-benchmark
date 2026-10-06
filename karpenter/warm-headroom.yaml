@@ -1,0 +1,62 @@
+# Warm headroom via the portable OVERPROVISIONING pattern (works on any Karpenter version;
+# the alpha CapacityBuffer CRD/feature-gate is not enabled in our install).
+#
+# A low-priority "pause" Deployment reserves CPU on benchmark nodes, forcing Karpenter to
+# keep warm nodes running. When the real app scales out, its (default priority) pods
+# PREEMPT these pause pods and land on the already-warm nodes instantly — then Karpenter
+# provisions replacements for the evicted pause pods. Net effect = capacity buffer.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: overprovisioning
+value: -1              # lower than default (0), so real pods preempt these
+globalDefault: false
+description: "Warm-headroom placeholder pods; preempted by real workloads."
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: overprovisioning
+  namespace: benchmark
+  annotations:
+    checkov.io/skip1: CKV_K8S_8=Pause placeholders serve nothing; probes add kubelet overhead per warm slot
+    checkov.io/skip2: CKV_K8S_9=Placeholders exist only to reserve capacity
+    checkov.io/skip3: CKV_K8S_43=Digest pinning omitted in this sample for readability; pin in production
+    checkov.io/skip4: CKV2_K8S_6=NetworkPolicy omitted; dedicated short-lived benchmark cluster
+spec:
+  # ~30 pods x 200m = ~6 vCPU of warm headroom (a few m6i nodes kept ready).
+  replicas: 30
+  selector: { matchLabels: { app: overprovisioning } }
+  template:
+    metadata:
+      labels: { app: overprovisioning }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile: { type: RuntimeDefault }
+      priorityClassName: overprovisioning
+      # Sit on the benchmark nodes (same taint/label as the app) so the warm capacity
+      # is exactly where the app will scale.
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: benchmark
+          effect: NoSchedule
+      nodeSelector:
+        role: benchmark
+      terminationGracePeriodSeconds: 0
+      containers:
+        - name: pause
+          image: public.ecr.aws/eks-distro/kubernetes/pause:3.7
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: "200m", memory: "64Mi" }   # match app request so 1 pause == 1 app slot
+            limits:   { cpu: "200m", memory: "64Mi" }   # placeholders never need more than they reserve
